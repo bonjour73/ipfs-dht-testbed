@@ -1,0 +1,9 @@
+---
+# Collections needed beyond ansible-core.
+# Install once on the controller: ansible-galaxy collection install -r requirements.yml
+collections:
+  - name: ansible.posix
+    version: ">=1.5.0"
+  # Only for the legacy playbook site.yml (roles/kubo_common uses ufw);
+  # the fleet-*.yml pipeline does not need it.
+  - name: community.general

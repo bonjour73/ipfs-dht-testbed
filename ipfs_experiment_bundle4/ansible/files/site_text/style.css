@@ -1,0 +1,4 @@
+body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; background: #f8fafc; color: #111827; }
+main { max-width: 900px; margin: 0 auto; padding: 2rem; }
+h1, h2 { margin-bottom: 0.75rem; }
+#text-block p { margin: 0 0 1rem 0; }

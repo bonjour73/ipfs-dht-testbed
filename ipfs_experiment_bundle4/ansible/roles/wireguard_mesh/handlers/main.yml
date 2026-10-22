@@ -1,0 +1,9 @@
+---
+# wg-quick has no "reload" verb that picks up new [Peer] blocks reliably across
+# versions; down+up is cheap here (mesh only churns once per benchmark window,
+# not mid-run) and guaranteed correct. `down` is allowed to fail (first run:
+# wg0 doesn't exist yet); `up` must succeed.
+- name: reload wg0
+  shell: wg-quick down wg0 >/dev/null 2>&1; wg-quick up wg0
+  args:
+    executable: /bin/bash

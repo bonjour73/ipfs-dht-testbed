@@ -1,0 +1,47 @@
+---
+
+- name: Pass 0 — pick ONE run id for this fleet-up (shared by every host)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # Each fleet-up writes into results/run-<id>/ on every host, so a failed or
+    # aborted run can never mix rows into a later one.
+    # Override with -e run_id=k3_retry to get a readable name.
+    - name: Set the run id
+      set_fact:
+        fleet_run_id: "{{ run_id | default(lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ')) }}"
+    - name: Show the run id
+      debug:
+        msg: "run_id={{ fleet_run_id }} (results -> <state_dir>/results/run-{{ fleet_run_id }}/)"
+
+- name: Pass 1 — bring up the bootstrap host (incl. the private bootstrap node)
+  hosts: bootstrap_host
+  become: true
+  roles:
+    - kubo_fleet
+  post_tasks:
+    - name: Read the bootstrap multiaddr this host produced
+      slurp:
+        src: "{{ state_dir }}/bootstrap.maddr"
+      register: boot_slurp
+    - name: Publish it as a host fact for pass 2
+      set_fact:
+        bootstrap_maddr: "{{ (boot_slurp.content | b64decode) | trim }}"
+    - name: Show bootstrap multiaddr
+      debug:
+        var: bootstrap_maddr
+
+- name: Pass 2 — bring up the rest of the fleet, joined to the bootstrap node
+  hosts: "fleet:!bootstrap_host"
+  become: true
+  vars:
+    bootstrap_maddr: "{{ hostvars[groups['bootstrap_host'][0]].bootstrap_maddr }}"
+  roles:
+    - kubo_fleet
+
+- name: Pass 3 — centralized baseline server (control host)
+  hosts: control
+  become: true
+  roles:
+    - centralized_baseline

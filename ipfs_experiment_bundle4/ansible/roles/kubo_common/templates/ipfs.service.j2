@@ -1,0 +1,16 @@
+[Unit]
+Description=IPFS daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ ipfs_user }}
+Group={{ ipfs_group }}
+Environment=IPFS_PATH={{ ipfs_path }}
+ExecStart=/usr/local/bin/ipfs daemon --migrate=true
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

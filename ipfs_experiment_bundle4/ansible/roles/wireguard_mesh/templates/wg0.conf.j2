@@ -1,0 +1,18 @@
+# Managed by Ansible (wireguard_mesh role) — do not edit by hand.
+[Interface]
+# Replaced in-place, on this host, by the "Install this host's own private
+# key" task right after this file is templated — the real key never passes
+# through the Ansible controller (see tasks/main.yml for why).
+PrivateKey = __REPLACED_LOCALLY_BY_ANSIBLE__
+Address = {{ wg_ip }}/32
+ListenPort = {{ wg_listen_port | default(51820) }}
+{% for peer_name in groups['fleet'] if peer_name != inventory_hostname %}
+{% set peer = hostvars[peer_name] %}
+
+[Peer]
+# {{ peer_name }} ({{ peer.region }}/{{ peer.host_role }})
+PublicKey = {{ peer.wg_pubkey }}
+Endpoint = {{ peer.ansible_host }}:{{ peer.wg_listen_port | default(51820) }}
+AllowedIPs = {{ peer.wg_ip }}/32, {{ peer.host_subnet }}
+PersistentKeepalive = 25
+{% endfor %}

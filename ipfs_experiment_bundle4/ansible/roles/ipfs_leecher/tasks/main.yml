@@ -1,0 +1,67 @@
+- name: Install browser dependencies
+  apt:
+    name: "{{ browser_packages }}"
+    state: present
+    update_cache: true
+  when: install_browser_stack
+
+- name: Create benchmark directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ipfs_user }}"
+    group: "{{ ipfs_group }}"
+    mode: "0755"
+  loop:
+    - /opt/ipfs-bench
+    - /opt/ipfs-bench/results
+
+- name: Create Python virtual environment for Selenium tools
+  command: python3 -m venv /opt/ipfs-bench/venv
+  args:
+    creates: /opt/ipfs-bench/venv/bin/python3
+  when: install_browser_stack
+
+- name: Install Selenium into virtual environment
+  command: /opt/ipfs-bench/venv/bin/pip install --upgrade pip selenium
+  when: install_browser_stack
+
+- name: Install curl benchmark script
+  copy:
+    src: "{{ playbook_dir }}/../scripts/bench_gateway_curl.sh"
+    dest: /opt/ipfs-bench/bench_gateway_curl.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install selenium benchmark script
+  copy:
+    src: "{{ playbook_dir }}/../scripts/bench_gateway_selenium.py"
+    dest: /opt/ipfs-bench/bench_gateway_selenium.py
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install IPFS helper script
+  copy:
+    src: "{{ playbook_dir }}/../scripts/ipfs_helpers.sh"
+    dest: /opt/ipfs-bench/ipfs_helpers.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install experiment runner script
+  copy:
+    src: "{{ playbook_dir }}/../scripts/run_design_a_experiments.sh"
+    dest: /opt/ipfs-bench/run_design_a_experiments.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install node validation script
+  copy:
+    src: "{{ playbook_dir }}/../scripts/validate_ipfs_node.sh"
+    dest: /opt/ipfs-bench/validate_ipfs_node.sh
+    owner: root
+    group: root
+    mode: "0755"

@@ -1,0 +1,113 @@
+---
+# kubo_fleet — prepare a fleet host and launch its slice of containerized Kubo
+# nodes (ipvlan L3 per container + netem in each netns). Cross-host routing of the
+# container /24s is handled by the WireGuard mesh (fleet-mesh.yml must run first,
+# bringing up fleet_iface / wg0 on every host).
+
+- name: Install fleet host packages
+  apt:
+    name:
+      - docker.io
+      - iproute2
+      - wireguard-tools
+      - jq
+      - iptables
+    state: present
+    update_cache: true
+
+- name: Ensure Docker is running and enabled
+  systemd:
+    name: docker
+    state: started
+    enabled: true
+
+# Debian 13 (trixie) split the docker CLI out of docker.io into its own
+# docker-cli package; on Debian 12 it is still inside docker.io. Install it
+# only where it exists, then prove the `docker` command really works.
+- name: Check whether docker-cli is a separate package on this release
+  command: apt-cache show docker-cli
+  register: docker_cli_pkg
+  failed_when: false
+  changed_when: false
+
+- name: Install docker-cli (Debian 13+)
+  apt:
+    name: docker-cli
+    state: present
+  when: docker_cli_pkg.rc == 0
+
+- name: GATE - docker CLI talks to the daemon
+  command: docker version --format '{{ "{{" }} .Server.Version {{ "}}" }}'
+  changed_when: false
+
+- name: Create fleet config + script directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/kubo_fleet
+    - /opt/kubo_fleet
+
+- name: Install shared pnet swarm key
+  copy:
+    src: "{{ swarm_key_local }}"
+    dest: "{{ swarm_key_host }}"
+    mode: "0600"
+
+- name: Install fleet scripts
+  copy:
+    src: "{{ item }}"
+    dest: "/opt/kubo_fleet/{{ item }}"
+    mode: "0755"
+  loop:
+    - launch_node.sh
+    - fleet_host_up.sh
+    - fleet_host_down.sh
+    - run_trial_seed.sh
+    - run_trial_measure.sh
+    - run_trial_baseline.sh
+
+- name: Pull patched-Kubo image
+  command: "docker pull {{ kubo_image }}"
+  changed_when: false
+  when: kubo_image_source == 'pull'
+
+# kubo_image_source=build: fleet-image.yml already built the image on this host.
+- name: Check the locally built image is present
+  command: "docker image inspect {{ kubo_image }}"
+  changed_when: false
+  when: kubo_image_source == 'build' and (node_count | int) > 0
+
+# The control node hosts the baseline + aggregator, not IPFS nodes.
+- name: Bring up this host's node slice
+  command: bash /opt/kubo_fleet/fleet_host_up.sh
+  when: (node_count | int) > 0
+  environment:
+    REGION: "{{ region }}"
+    HOST_ROLE: "{{ host_role }}"
+    NODE_COUNT: "{{ node_count }}"
+    HOST_SUBNET: "{{ host_subnet }}"
+    FLEET_IFACE: "{{ fleet_iface }}"
+    CONTAINER_NET: "{{ container_net }}"
+    IP_OFFSET: "{{ ip_offset }}"
+    KUBO_IMAGE: "{{ kubo_image }}"
+    SWARM_KEY_HOST: "{{ swarm_key_host }}"
+    RUN_BOOTSTRAP: "{{ run_bootstrap | default(0) }}"
+    BOOTSTRAP_MADDR: "{{ bootstrap_maddr | default('') }}"
+    EXP_DHT_ALPHA: "{{ exp_dht_alpha }}"
+    EXP_DHT_BUCKET_K: "{{ exp_dht_bucket_k }}"
+    EXP_DHT_PRIVATE_NET: "{{ exp_dht_private_net }}"
+    NETEM_DELAY: "{{ netem_delay | default('') }}"
+    NETEM_JITTER: "{{ netem_jitter | default('') }}"
+    NETEM_LOSS: "{{ netem_loss | default('') }}"
+    CPU_LIMIT: "{{ cpu_limit | default('') }}"
+    MEM_LIMIT: "{{ mem_limit | default('') }}"
+    STATE_DIR: "{{ state_dir }}"
+    RUN_ID: "{{ hostvars['localhost'].fleet_run_id | default('') }}"
+  register: host_up
+  changed_when: "'host up:' in host_up.stdout"
+
+- name: Show this host's launch summary
+  debug:
+    msg: "{{ host_up.stdout_lines | default(['(control node — no IPFS nodes)']) }}"

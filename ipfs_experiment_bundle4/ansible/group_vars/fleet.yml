@@ -1,0 +1,47 @@
+# Fleet-wide variables for the kubo_fleet role. Override per run on the CLI, e.g.
+---
+ansible_user: root
+
+# Patched-Kubo image (built from ipfs_dht_harness/testbed/Dockerfile and pushed to a
+# registry the fleet can pull, or built locally on each host in a pre-task).
+kubo_image: "ghcr.io/<your-user>/kubo-ak:0.43.0"
+# "pull" = docker pull kubo_image from a registry; "build" = it was built on
+# each host by fleet-image.yml (pass -e kubo_image=kubo-ak:0.43.0 with it).
+kubo_image_source: "pull"
+
+swarm_key_local: "swarm.key"                # resolves to roles/kubo_fleet/files/swarm.key
+swarm_key_host: "/etc/kubo_fleet/swarm.key" # path it is copied to on each host
+
+fleet_iface: "wg0"
+container_net: "fleetnet"
+ip_offset: 10                                # containers start at .10 in each /24
+
+# WireGuard mesh (fleet-mesh.yml / roles/wireguard_mesh). Point-to-point routed
+# mesh: each host's wg0 gets a /32 from this range, distinct from both the
+# ansible_host (real/public IP, used for SSH + as the WG Endpoint) and the
+# per-host container /24 (host_subnet). See inventory/fleet.ini.
+wg_listen_port: 51820
+
+# Per-container resource caps (~125 nodes on a 48-vCPU / 192 GB CCX63).
+cpu_limit: "0.35"
+mem_limit: "1500m"
+
+# Kademlia parameters under test (the α/K sweep dimension). Defaults = stock Kubo.
+exp_dht_alpha: 10
+exp_dht_bucket_k: 20
+exp_dht_private_net: 1
+
+# Intra-host netem: same-host containers are ~0ms, so emulate a realistic
+# same-region RTT between them. Cross-region latency is the REAL geographic path
+# over the mesh and is not shaped here.
+netem_delay: "4ms"
+netem_jitter: "1ms"
+netem_loss: "0.05%"
+
+# State dir on each host.
+state_dir: "/var/run/kubo_fleet"
+
+seed_size_bytes: 1048576          # 1 MiB, per-trial IPFS payload
+baseline_payload_bytes: 1048576   # 1 MiB, nginx payload — keep == seed_size_bytes
+baseline_nginx_image: "nginx:alpine"
+run_baseline: true

@@ -1,0 +1,7 @@
+---
+
+- name: Build the WireGuard mesh
+  hosts: fleet
+  become: true
+  roles:
+    - wireguard_mesh

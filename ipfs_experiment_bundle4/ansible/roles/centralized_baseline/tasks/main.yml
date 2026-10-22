@@ -1,0 +1,87 @@
+---
+
+- name: Install Docker (idempotent; kubo_fleet may already have on node hosts)
+  apt:
+    name: docker.io
+    state: present
+    update_cache: true
+
+- name: Ensure Docker is running
+  systemd:
+    name: docker
+    state: started
+    enabled: true
+
+# Debian 13 (trixie) split the docker CLI out of docker.io into its own
+# docker-cli package; on Debian 12 it is still inside docker.io. Install it
+# only where it exists, then prove the `docker` command really works.
+- name: Check whether docker-cli is a separate package on this release
+  command: apt-cache show docker-cli
+  register: docker_cli_pkg
+  failed_when: false
+  changed_when: false
+
+- name: Install docker-cli (Debian 13+)
+  apt:
+    name: docker-cli
+    state: present
+  when: docker_cli_pkg.rc == 0
+
+- name: GATE - docker CLI talks to the daemon
+  command: docker version --format '{{ "{{" }} .Server.Version {{ "}}" }}'
+  changed_when: false
+
+- name: Create the baseline web root
+  file:
+    path: /opt/baseline/www
+    state: directory
+    mode: "0755"
+
+- name: Generate the size-matched payload (only if missing or wrong size)
+  # Must match the seeders' payload SIZE for a fair delivery race
+  # (baseline_payload_bytes should == seed_size_bytes; both default 1 MiB in
+  # group_vars/fleet.yml). Regenerated only when absent or the size changed,
+  # so re-running this role is cheap and idempotent.
+  shell: |
+    set -euo pipefail
+    f=/opt/baseline/www/payload.bin
+    want={{ baseline_payload_bytes | default(1048576) }}
+    have=0
+    [ -f "$f" ] && have=$(stat -c '%s' "$f")
+    if [ "$have" != "$want" ]; then
+      head -c "$want" /dev/urandom > "$f"
+      echo "generated $want-byte payload"
+    else
+      echo "payload already $want bytes"
+    fi
+  args:
+    executable: /bin/bash
+  register: payload_gen
+  changed_when: "'generated' in payload_gen.stdout"
+
+- name: Pull the nginx image
+  command: docker pull {{ baseline_nginx_image | default('nginx:alpine') }}
+  changed_when: false
+
+- name: (Re)create the baseline nginx container bound to the mesh IP
+  # docker run is not idempotent on its own; drop any stale container first so
+  # re-running the role reconciles cleanly (e.g. after a payload-size change).
+  shell: |
+    set -euo pipefail
+    name=baseline-nginx
+    if docker inspect "$name" >/dev/null 2>&1; then
+      docker rm -f "$name" >/dev/null
+    fi
+    docker run -d --name "$name" --restart unless-stopped \
+      -p {{ wg_ip }}:80:80 \
+      -v /opt/baseline/www:/usr/share/nginx/html:ro \
+      {{ baseline_nginx_image | default('nginx:alpine') }} >/dev/null
+    echo "baseline-nginx up on {{ wg_ip }}:80"
+  args:
+    executable: /bin/bash
+  register: nginx_up
+  changed_when: "'up on' in nginx_up.stdout"
+
+- name: Show baseline endpoint
+  debug:
+    msg: "centralized baseline serving http://{{ wg_ip }}/payload.bin ({{ baseline_payload_bytes | default(1048576) }} bytes)"

@@ -1,0 +1,17 @@
+- name: Configure all IPFS nodes
+  hosts: all
+  become: true
+  roles:
+    - kubo_common
+
+- name: Configure seeders
+  hosts: seeders
+  become: true
+  roles:
+    - ipfs_seeder
+
+- name: Configure leechers
+  hosts: leechers
+  become: true
+  roles:
+    - ipfs_leecher

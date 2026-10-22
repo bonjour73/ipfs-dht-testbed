@@ -1,0 +1,56 @@
+- name: Create site root
+  file:
+    path: /srv/ipfs-sites
+    state: directory
+    owner: "{{ ipfs_user }}"
+    group: "{{ ipfs_group }}"
+    mode: "0755"
+
+- name: Copy text site
+  copy:
+    src: "{{ playbook_dir }}/files/site_text/"
+    dest: /srv/ipfs-sites/text/
+    owner: "{{ ipfs_user }}"
+    group: "{{ ipfs_group }}"
+    mode: preserve
+
+- name: Copy image site
+  copy:
+    src: "{{ playbook_dir }}/files/site_image/"
+    dest: /srv/ipfs-sites/image/
+    owner: "{{ ipfs_user }}"
+    group: "{{ ipfs_group }}"
+    mode: preserve
+
+- name: Copy large site
+  copy:
+    src: "{{ playbook_dir }}/files/site_large/"
+    dest: /srv/ipfs-sites/large/
+    owner: "{{ ipfs_user }}"
+    group: "{{ ipfs_group }}"
+    mode: preserve
+
+- name: Install publish helper
+  copy:
+    dest: /usr/local/bin/ipfs-publish-site
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      export IPFS_PATH="{{ ipfs_path }}"
+      SITE_DIR="${1:?usage: ipfs-publish-site /path/to/site}"
+      CID=$(sudo -u {{ ipfs_user }} /usr/local/bin/ipfs add -r -Q "$SITE_DIR")
+      sudo -u {{ ipfs_user }} /usr/local/bin/ipfs pin add "$CID" >/dev/null
+      echo "$CID"
+
+- name: Install publish-all helper
+  copy:
+    dest: /usr/local/bin/ipfs-publish-all-sites
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      for s in text image large; do
+        cid=$(/usr/local/bin/ipfs-publish-site "/srv/ipfs-sites/$s")
+        echo "$s,$cid"
+      done

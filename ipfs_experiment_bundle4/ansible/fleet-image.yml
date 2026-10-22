@@ -1,0 +1,96 @@
+---
+
+- name: Package the image build context on the controller (once)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    harness_src_dir: "{{ playbook_dir }}/../../ipfs_dht_harness"
+  tasks:
+    - name: Make sure the harness source is where we expect it
+      stat:
+        path: "{{ harness_src_dir }}/testbed/Dockerfile"
+      register: dockerfile_stat
+
+    - name: Fail clearly if the harness dir is missing
+      assert:
+        that: dockerfile_stat.stat.exists
+        fail_msg: >-
+          {{ harness_src_dir }}/testbed/Dockerfile not found. Pass
+          -e harness_src_dir=/path/to/ipfs_dht_harness
+
+    - name: Tar the build context (testbed/ + Go sources only)
+      shell: >-
+        tar czf /tmp/kubo_build_ctx.tgz -C "{{ harness_src_dir }}"
+        testbed go.mod go.sum $(cd "{{ harness_src_dir }}" && ls *.go)
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+- name: Build the patched-Kubo image on each node host
+  hosts: fleet
+  become: true
+  gather_facts: false
+  vars:
+    kubo_image: "kubo-ak:0.43.0"
+  tasks:
+    - name: Skip hosts that run no Kubo nodes
+      meta: end_host
+      when: (node_count | int) == 0
+
+    - name: Install Docker + tar
+      apt:
+        name: [docker.io, tar]
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker is running
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    # Debian 13 (trixie) split the docker CLI out of docker.io into its own
+    # docker-cli package; on Debian 12 it is still inside docker.io. Install it
+    # only where it exists, then prove the `docker` command really works.
+    - name: Check whether docker-cli is a separate package on this release
+      command: apt-cache show docker-cli
+      register: docker_cli_pkg
+      failed_when: false
+      changed_when: false
+
+    - name: Install docker-cli (Debian 13+)
+      apt:
+        name: docker-cli
+        state: present
+      when: docker_cli_pkg.rc == 0
+
+    - name: GATE - docker CLI talks to the daemon
+      command: docker version --format '{{ "{{" }} .Server.Version {{ "}}" }}'
+      changed_when: false
+
+    - name: Fresh build directory
+      file:
+        path: /opt/kubo_build
+        state: "{{ item }}"
+        mode: "0755"
+      loop: [absent, directory]
+
+    - name: Ship + unpack the build context
+      unarchive:
+        src: /tmp/kubo_build_ctx.tgz
+        dest: /opt/kubo_build
+
+    - name: docker build (native x86_64; takes a few minutes)
+      command: docker build -f testbed/Dockerfile -t {{ kubo_image }} .
+      args:
+        chdir: /opt/kubo_build
+      changed_when: true
+
+    - name: GATE - the image runs and reports its version
+      command: docker run --rm --entrypoint ipfs {{ kubo_image }} version
+      register: ipfs_ver
+      changed_when: false
+
+    - name: Show version
+      debug:
+        msg: "{{ inventory_hostname }}: {{ ipfs_ver.stdout }}"

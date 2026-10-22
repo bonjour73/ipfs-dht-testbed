@@ -1,0 +1,72 @@
+---
+
+- name: "[trial {{ trial_num }}] pick this trial's target seeder host"
+  set_fact:
+    trial_seeder_host: "{{ groups['seeders'][ (trial_num - 1) % (groups['seeders'] | length) ] }}"
+
+- name: "[trial {{ trial_num }}] seed a fresh CID on the chosen seeder host"
+  when: inventory_hostname == trial_seeder_host
+  command: bash /opt/kubo_fleet/run_trial_seed.sh
+  environment:
+    TRIAL: "{{ trial_num }}"
+    STATE_DIR: "{{ state_dir }}"
+    SEED_SIZE_BYTES: "{{ seed_size_bytes | default(1048576) }}"
+  register: seed_out
+  changed_when: false
+
+- name: "[trial {{ trial_num }}] publish this trial's CID as a fact"
+  when: inventory_hostname == trial_seeder_host
+  set_fact:
+    trial_cid: "{{ seed_out.stdout_lines | last }}"
+
+- name: "[trial {{ trial_num }}] verify the CID actually propagated before measuring"
+  when: "'leechers' in group_names"
+  assert:
+    that:
+      - hostvars[trial_seeder_host].trial_cid is defined
+      - (hostvars[trial_seeder_host].trial_cid | default('')) | length > 0
+    fail_msg: >-
+      trial {{ trial_num }}: hostvars[{{ trial_seeder_host }}].trial_cid is
+      missing/empty. Either run_trial_seed.sh failed on that host, or the
+      include_tasks+loop cross-host fact-handoff this design assumes doesn't
+      hold on this Ansible version — re-run with -vvv and check task ordering
+      before trusting any data already collected this run.
+
+- name: "[trial {{ trial_num }}] measure DHT lookup (alpha/K mechanism) on every leecher host"
+  when: "'leechers' in group_names"
+  command: bash /opt/kubo_fleet/run_trial_measure.sh
+  environment:
+    CID: "{{ hostvars[trial_seeder_host].trial_cid }}"
+    TRIAL: "{{ trial_num }}"
+    STATE_DIR: "{{ state_dir }}"
+    MEASURE_PARALLEL: "{{ measure_parallel | default(16) }}"
+  register: measure_out
+  changed_when: false
+
+- name: "[trial {{ trial_num }}] lookup progress"
+  when: "'leechers' in group_names"
+  debug:
+    msg: "{{ measure_out.stdout_lines | default([]) }}"
+
+- name: "[trial {{ trial_num }}] centralized-baseline race on every leecher host"
+  when:
+    - "'leechers' in group_names"
+    - run_baseline | default(true) | bool
+    - groups['control'] | default([]) | length > 0
+  command: bash /opt/kubo_fleet/run_trial_baseline.sh
+  environment:
+    CID: "{{ hostvars[trial_seeder_host].trial_cid }}"
+    TRIAL: "{{ trial_num }}"
+    STATE_DIR: "{{ state_dir }}"
+    CENTRAL_URL: "http://{{ hostvars[groups['control'][0]].wg_ip }}/payload.bin"
+    MEASURE_PARALLEL: "{{ measure_parallel | default(16) }}"
+  register: baseline_out
+  changed_when: false
+
+- name: "[trial {{ trial_num }}] baseline progress"
+  when:
+    - "'leechers' in group_names"
+    - run_baseline | default(true) | bool
+    - groups['control'] | default([]) | length > 0
+  debug:
+    msg: "{{ baseline_out.stdout_lines | default([]) }}"

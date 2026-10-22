@@ -1,0 +1,15 @@
+---
+
+- name: Tear down every fleet host's node slice
+  hosts: fleet
+  become: true
+  tasks:
+    - name: Run host teardown
+      command: bash /opt/kubo_fleet/fleet_host_down.sh
+      when: (node_count | int) > 0
+      environment:
+        REGION: "{{ region }}"
+        CONTAINER_NET: "{{ container_net }}"
+        STATE_DIR: "{{ state_dir }}"
+      register: down
+      changed_when: "'host down complete' in down.stdout"

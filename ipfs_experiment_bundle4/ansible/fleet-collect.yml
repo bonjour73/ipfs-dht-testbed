@@ -1,0 +1,123 @@
+---
+
+- name: Archive + fetch each host's results
+  hosts: fleet
+  become: true
+  vars:
+    collect_dir: "./collected"
+  tasks:
+    - name: Check whether this host has a results dir yet
+      stat:
+        path: "{{ state_dir }}/results"
+      register: results_dir
+
+    - name: Archive this host's results tree (plain tar, no collection dependency)
+      when: results_dir.stat.exists
+      command: tar czf /tmp/kubo_fleet_results_{{ inventory_hostname }}.tar.gz -C {{ state_dir }} results
+      changed_when: true
+
+    - name: Fetch the archive to the controller
+      when: results_dir.stat.exists
+      fetch:
+        src: "/tmp/kubo_fleet_results_{{ inventory_hostname }}.tar.gz"
+        dest: "{{ collect_dir }}/{{ inventory_hostname }}.tar.gz"
+        flat: true
+
+    - name: Clean up the remote tarball
+      when: results_dir.stat.exists
+      file:
+        path: "/tmp/kubo_fleet_results_{{ inventory_hostname }}.tar.gz"
+        state: absent
+
+- name: Flatten + analyze on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    collect_dir: "./collected"
+  tasks:
+    - name: Ensure collect_dir exists (fetch only creates it if it actually ran)
+      file:
+        path: "{{ collect_dir }}"
+        state: directory
+
+    - name: Extract every fetched archive
+      shell: |
+        set -euo pipefail
+        cd "{{ collect_dir }}"
+        shopt -s nullglob
+        for tgz in *.tar.gz; do
+          host="${tgz%.tar.gz}"
+          rm -rf "extracted/$host"
+          mkdir -p "extracted/$host"
+          tar -xzf "$tgz" -C "extracted/$host"
+        done
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    # Two CSV kinds live side by side in each node's results dir: run.csv (the
+    # dhtharness α/K lookup metrics) and baseline.csv (the IPFS-vs-centralized
+    # delivery race). Flatten each kind into its own directory so the two
+    # analyzers get exactly the schema each expects.
+    - name: Flatten every node's run.csv + baseline.csv into per-kind dirs
+      shell: |
+        set -euo pipefail
+        rm -rf "{{ collect_dir }}/flat" "{{ collect_dir }}/baseline_flat"
+        mkdir -p "{{ collect_dir }}/flat" "{{ collect_dir }}/baseline_flat" "{{ collect_dir }}/extracted"
+        for kind in run baseline; do
+          dst="{{ collect_dir }}/flat"
+          [ "$kind" = baseline ] && dst="{{ collect_dir }}/baseline_flat"
+          find "{{ collect_dir }}/extracted" -name "${kind}.csv" | while read -r f; do
+            node="$(basename "$(dirname "$f")")"
+            host="$(echo "$f" | sed -E 's#.*/extracted/([^/]+)/.*#\1#')"
+            # results/run-<id>/<node>/x.csv -> run-<id>; legacy results/<node>/x.csv -> run-legacy
+            run="$(basename "$(dirname "$(dirname "$f")")")"
+            case "$run" in run-*) ;; *) run=run-legacy ;; esac
+            cp "$f" "${dst}/${host}__${run}__${node}.csv"
+          done
+        done
+        echo "lookup CSVs:   $(find "{{ collect_dir }}/flat" -name '*.csv' | wc -l)"
+        echo "baseline CSVs: $(find "{{ collect_dir }}/baseline_flat" -name '*.csv' | wc -l)"
+      args:
+        executable: /bin/bash
+      register: flatten_out
+      changed_when: true
+
+    - name: Show flatten summary
+      debug:
+        msg: "{{ flatten_out.stdout_lines }}"
+
+    - name: Run analyze_dht_sweep.py over the lookup CSVs
+      command: >
+        python3 {{ playbook_dir }}/../../ipfs_dht_harness/analyze_dht_sweep.py
+        {{ collect_dir }}/flat
+        --out-summary {{ collect_dir }}/dht_sweep_summary.csv
+      register: analyze_out
+      changed_when: false
+
+    - name: Show lookup analysis output
+      debug:
+        msg: "{{ analyze_out.stdout_lines }}"
+
+    # Baseline may be absent (pure α/K run, or run_baseline=false) — count the
+    # files first and skip the analyzer cleanly rather than erroring on empty.
+    - name: Count baseline CSVs
+      find:
+        paths: "{{ collect_dir }}/baseline_flat"
+        patterns: "*.csv"
+      register: baseline_csvs
+
+    - name: Run analyze_baseline.py over the delivery-race CSVs
+      when: baseline_csvs.matched | int > 0
+      command: >
+        python3 {{ playbook_dir }}/../../ipfs_dht_harness/analyze_baseline.py
+        {{ collect_dir }}/baseline_flat
+        --out-summary {{ collect_dir }}/baseline_summary.csv
+      register: baseline_analyze_out
+      changed_when: false
+
+    - name: Show baseline analysis output
+      when: baseline_csvs.matched | int > 0
+      debug:
+        msg: "{{ baseline_analyze_out.stdout_lines }}"

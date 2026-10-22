@@ -1,0 +1,167 @@
+- name: Install OS packages
+  apt:
+    name:
+      - curl
+      - tar
+      - jq
+      - ufw
+      - ca-certificates
+      - sudo
+    state: present
+    update_cache: true
+
+- name: Create ipfs group
+  group:
+    name: "{{ ipfs_group }}"
+    state: present
+
+- name: Create ipfs user
+  user:
+    name: "{{ ipfs_user }}"
+    group: "{{ ipfs_group }}"
+    system: true
+    create_home: false
+    home: "{{ ipfs_path }}"
+    shell: /usr/sbin/nologin
+
+- name: Create IPFS data directory
+  file:
+    path: "{{ ipfs_path }}"
+    state: directory
+    owner: "{{ ipfs_user }}"
+    group: "{{ ipfs_group }}"
+    mode: "0755"
+
+- name: Download Kubo archive
+  get_url:
+    url: "{{ kubo_url }}"
+    dest: "/tmp/{{ kubo_archive }}"
+    mode: "0644"
+    checksum: "{{ kubo_checksum if kubo_checksum | length > 0 else omit }}"
+
+- name: Remove previous temporary Kubo extraction directory
+  file:
+    path: /tmp/kubo
+    state: absent
+
+- name: Unpack Kubo archive
+  unarchive:
+    src: "/tmp/{{ kubo_archive }}"
+    dest: /tmp/
+    remote_src: true
+
+- name: Install Kubo binary
+  copy:
+    src: /tmp/kubo/ipfs
+    dest: /usr/local/bin/ipfs
+    mode: "0755"
+    remote_src: true
+
+- name: Check if repo is already initialized
+  stat:
+    path: "{{ ipfs_path }}/config"
+  register: ipfs_repo
+
+- name: Initialize IPFS repo
+  command: ipfs init
+  become_user: "{{ ipfs_user }}"
+  environment:
+    IPFS_PATH: "{{ ipfs_path }}"
+  when: not ipfs_repo.stat.exists
+
+- name: Set API address
+  command: ipfs config Addresses.API "{{ ipfs_api_addr }}"
+  become_user: "{{ ipfs_user }}"
+  environment:
+    IPFS_PATH: "{{ ipfs_path }}"
+
+- name: Set Gateway address
+  command: ipfs config Addresses.Gateway "{{ ipfs_gateway_addr }}"
+  become_user: "{{ ipfs_user }}"
+  environment:
+    IPFS_PATH: "{{ ipfs_path }}"
+
+- name: Set swarm addresses
+  command: ipfs config --json Addresses.Swarm '{{ ipfs_swarm_addrs | to_json }}'
+  become_user: "{{ ipfs_user }}"
+  environment:
+    IPFS_PATH: "{{ ipfs_path }}"
+
+- name: Enable accelerated DHT routing mode
+  command: ipfs config Routing.Type auto
+  become_user: "{{ ipfs_user }}"
+  environment:
+    IPFS_PATH: "{{ ipfs_path }}"
+
+- name: Configure static peering list
+  command: ipfs config --json Peering.Peers '{{ ipfs_static_peers | to_json }}'
+  become_user: "{{ ipfs_user }}"
+  environment:
+    IPFS_PATH: "{{ ipfs_path }}"
+
+- name: Install systemd unit
+  template:
+    src: ipfs.service.j2
+    dest: /etc/systemd/system/ipfs.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart ipfs
+
+- name: Enable and start IPFS
+  systemd:
+    name: ipfs
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for IPFS API to listen
+  wait_for:
+    host: 127.0.0.1
+    port: 5001
+    timeout: 60
+
+- name: Wait for IPFS gateway to listen
+  wait_for:
+    host: 127.0.0.1
+    port: 8080
+    timeout: 60
+
+- name: Show node identity for debugging
+  command: ipfs id
+  become_user: "{{ ipfs_user }}"
+  environment:
+    IPFS_PATH: "{{ ipfs_path }}"
+  register: ipfs_id_output
+  changed_when: false
+
+- name: Print node identity summary
+  debug:
+    var: ipfs_id_output.stdout
+
+- name: Allow SSH in UFW
+  ufw:
+    rule: allow
+    name: OpenSSH
+  when: configure_ufw
+
+- name: Allow IPFS swarm TCP port
+  ufw:
+    rule: allow
+    port: "4001"
+    proto: tcp
+  when: configure_ufw
+
+- name: Allow IPFS swarm UDP port
+  ufw:
+    rule: allow
+    port: "4001"
+    proto: udp
+  when: configure_ufw
+
+- name: Enable UFW with incoming deny policy
+  ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+  when: configure_ufw

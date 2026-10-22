@@ -1,0 +1,13 @@
+---
+
+- name: Run benchmark trials
+  hosts: fleet
+  become: true
+  vars:
+    trials: 10
+  tasks:
+    - name: Run {{ trials }} trial(s)
+      include_tasks: roles/kubo_fleet/tasks/run_trial.yml
+      loop: "{{ range(1, (trials | int) + 1) | list }}"
+      loop_control:
+        loop_var: trial_num

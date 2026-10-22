@@ -1,0 +1,65 @@
+# Private α/K IPFS testbed (single host).
+
+x-common: &common
+  image: kubo-exp:latest
+  restart: "no"
+  volumes:
+    - ./swarm.key:/swarm.key:ro
+    - shared:/shared
+  environment:
+    EXP_DHT_ALPHA: ${EXP_DHT_ALPHA:-10}
+    EXP_DHT_BUCKET_K: ${EXP_DHT_BUCKET_K:-20}
+    EXP_DHT_PRIVATE_NET: "1"
+    EXP_DHT_PROTOCOL_PREFIX: ${EXP_DHT_PROTOCOL_PREFIX:-/exp}
+
+services:
+  bootstrap:
+    <<: *common
+    hostname: bootstrap
+    environment:
+      ROLE: bootstrap
+      EXP_DHT_ALPHA: ${EXP_DHT_ALPHA:-10}
+      EXP_DHT_BUCKET_K: ${EXP_DHT_BUCKET_K:-20}
+      EXP_DHT_PRIVATE_NET: "1"
+      EXP_DHT_PROTOCOL_PREFIX: ${EXP_DHT_PROTOCOL_PREFIX:-/exp}
+
+  seeder:
+    <<: *common
+    depends_on: [bootstrap]
+    environment:
+      ROLE: seeder
+      SEED_SIZE_BYTES: ${SEED_SIZE_BYTES:-1048576}
+      EXP_DHT_ALPHA: ${EXP_DHT_ALPHA:-10}
+      EXP_DHT_BUCKET_K: ${EXP_DHT_BUCKET_K:-20}
+      EXP_DHT_PRIVATE_NET: "1"
+      EXP_DHT_PROTOCOL_PREFIX: ${EXP_DHT_PROTOCOL_PREFIX:-/exp}
+
+  node:
+    <<: *common
+    depends_on: [bootstrap]
+    environment:
+      ROLE: node
+      NETEM_DELAY: ${NETEM_DELAY:-}
+      EXP_DHT_ALPHA: ${EXP_DHT_ALPHA:-10}
+      EXP_DHT_BUCKET_K: ${EXP_DHT_BUCKET_K:-20}
+      EXP_DHT_PRIVATE_NET: "1"
+      EXP_DHT_PROTOCOL_PREFIX: ${EXP_DHT_PROTOCOL_PREFIX:-/exp}
+    # netem needs NET_ADMIN; harmless if unused.
+    cap_add:
+      - NET_ADMIN
+
+  measurer:
+    <<: *common
+    depends_on: [bootstrap, seeder]
+    environment:
+      ROLE: measurer
+      TRIALS: ${TRIALS:-30}
+      MEASURE_SETTLE: ${MEASURE_SETTLE:-25}
+      OUT: ${OUT:-/shared/run.csv}
+      EXP_DHT_ALPHA: ${EXP_DHT_ALPHA:-10}
+      EXP_DHT_BUCKET_K: ${EXP_DHT_BUCKET_K:-20}
+      EXP_DHT_PRIVATE_NET: "1"
+      EXP_DHT_PROTOCOL_PREFIX: ${EXP_DHT_PROTOCOL_PREFIX:-/exp}
+
+volumes:
+  shared:

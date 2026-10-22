@@ -1,0 +1,68 @@
+---
+
+- name: Install WireGuard tools
+  apt:
+    name: wireguard-tools
+    state: present
+    update_cache: true
+
+- name: Enable IPv4 forwarding (wg0 <-> ipvlan routing on this host)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    # Debian 13 no longer ships /etc/sysctl.conf (the module default);
+    # sysctl.d works on both 12 and 13.
+    sysctl_file: /etc/sysctl.d/99-kubo-fleet.conf
+    state: present
+    reload: true
+
+- name: Ensure /etc/wireguard exists
+  file:
+    path: /etc/wireguard
+    state: directory
+    mode: "0700"
+
+- name: Generate this host's WireGuard private key (idempotent)
+  shell: umask 077 && wg genkey > /etc/wireguard/privatekey
+  args:
+    creates: /etc/wireguard/privatekey
+
+- name: Derive this host's public key (idempotent)
+  shell: wg pubkey < /etc/wireguard/privatekey > /etc/wireguard/publickey
+  args:
+    creates: /etc/wireguard/publickey
+
+- name: Read this host's PUBLIC key back (peers need it; the private key does not leave this host — see below)
+  slurp:
+    src: /etc/wireguard/publickey
+  register: wg_pub_slurp
+
+- name: Publish the public key fact (peers read this via hostvars in the next task)
+  set_fact:
+    wg_pubkey: "{{ (wg_pub_slurp.content | b64decode) | trim }}"
+
+- name: Template this host's wg0.conf (private key left as a placeholder)
+  template:
+    src: wg0.conf.j2
+    dest: /etc/wireguard/wg0.conf
+    mode: "0600"
+  notify: reload wg0
+
+- name: Install this host's own private key into wg0.conf (never leaves this host)
+  shell: |
+    set -eu
+    priv="$(cat /etc/wireguard/privatekey)"
+    sed -i "s#^PrivateKey = .*#PrivateKey = ${priv}#" /etc/wireguard/wg0.conf
+  args:
+    executable: /bin/bash
+  no_log: true
+  notify: reload wg0
+
+- name: Flush handlers now so wg0 is up before kubo_fleet needs it
+  meta: flush_handlers
+
+- name: Enable wg-quick@wg0 at boot
+  systemd:
+    name: wg-quick@wg0
+    enabled: true
